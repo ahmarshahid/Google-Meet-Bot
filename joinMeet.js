@@ -3,8 +3,8 @@ const path = require("path");
 
 (async () => {
 
-  const MEET_LINK = "https://meet.google.com/xxx-xxxx-xxx";
-  const JOIN_NAME = "Your Name"; // The name to enter
+  const MEET_LINK = "https://meet.google.com/epx-exdr-ehq";
+  const JOIN_NAME = "Ahmar Shahid"; // The name to enter
   const BOT_PROFILE_DIR = path.join(__dirname, "chrome-profile");
   const CHROME_EXE = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 
@@ -90,33 +90,70 @@ const path = require("path");
   // Give the page a moment to fully render
   await page.waitForTimeout(3000);
 
-  // --- Dismiss popups ---
+  // --- Dismiss popups FIRST ("Got it" overlay can block name input) ---
   for (const text of ["Got it", "Dismiss", "Close"]) {
     try {
       const btn = page.locator(`button:has-text("${text}")`).first();
-      if (await btn.isVisible({ timeout: 1000 }).catch(() => false)) {
+      if (await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
         await btn.click();
         console.log(`Dismissed: "${text}"`);
-        await page.waitForTimeout(500);
+        await page.waitForTimeout(1000);
       }
     } catch (e) {}
   }
 
+  // Give a moment after dismissing popups
+  await page.waitForTimeout(1000);
+
   // --- Enter Name ---
   console.log("Checking if name input is present...");
   try {
-    // A broader selector for the name input box handling Google Meet's specific layout
-    const nameInput = page.locator('input[type="text"][placeholder*="name" i], input[type="text"][aria-label*="name" i], input[type="text"]:visible').first();
-    
-    if (await nameInput.isVisible({ timeout: 5000 }).catch(() => false)) {
+    // Debug: log all visible inputs on the page
+    const inputInfo = await page.evaluate(() => {
+      const inputs = document.querySelectorAll('input');
+      return Array.from(inputs).map(inp => ({
+        type: inp.type,
+        placeholder: inp.placeholder,
+        ariaLabel: inp.getAttribute('aria-label'),
+        visible: inp.offsetParent !== null,
+        value: inp.value,
+        id: inp.id,
+        className: inp.className
+      }));
+    });
+    console.log("  -> All inputs found on page:", JSON.stringify(inputInfo, null, 2));
+
+    // Try multiple strategies to find the name input
+    let nameInput = page.locator('input[placeholder*="name" i]').first();
+    let found = await nameInput.isVisible({ timeout: 3000 }).catch(() => false);
+
+    if (!found) {
+      nameInput = page.locator('input[aria-label*="name" i]').first();
+      found = await nameInput.isVisible({ timeout: 2000 }).catch(() => false);
+    }
+
+    if (!found) {
+      // Try any visible text input on the right panel
+      nameInput = page.locator('input[type="text"]:visible').first();
+      found = await nameInput.isVisible({ timeout: 2000 }).catch(() => false);
+    }
+
+    if (!found) {
+      // Last resort: any visible input that isn't hidden
+      nameInput = page.locator('input:visible').first();
+      found = await nameInput.isVisible({ timeout: 2000 }).catch(() => false);
+    }
+
+    if (found) {
       console.log(`  -> Found name input. Typing "${JOIN_NAME}"...`);
-      // Use focus and keyboard typing which is sometimes more reliable for React inputs
+      await nameInput.click(); // Click first to ensure focus
+      await page.waitForTimeout(500);
       await nameInput.focus();
       await page.keyboard.press('Control+A'); // Select all to overwrite existing text
       await page.keyboard.press('Backspace');
-      await page.keyboard.type(JOIN_NAME, { delay: 100 });
+      await page.keyboard.type(JOIN_NAME, { delay: 150 });
       console.log("  -> Name entered.");
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(1500);
     } else {
       console.log("  -> Name input not found (already logged in?).");
     }

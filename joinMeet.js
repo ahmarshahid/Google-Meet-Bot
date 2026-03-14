@@ -3,10 +3,48 @@ const path = require("path");
 
 (async () => {
 
-  const MEET_LINK = "https://meet.google.com/epx-exdr-ehq";
-  const JOIN_NAME = "Ahmar Shahid"; // The name to enter
+  const MEET_LINK = "https://meet.google.com/xxx-xxxx-xxx";
+  const JOIN_NAME = "xxxxx"; // The name to enter
+  const JOIN_TIME = "xx:xx"; // Time to join in 24-hour format (HH:MM), e.g. "14:30" for 2:30 PM. Set to null to join immediately.
   const BOT_PROFILE_DIR = path.join(__dirname, "chrome-profile");
   const CHROME_EXE = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+
+  // --- Wait for scheduled time ---
+  if (JOIN_TIME) {
+    const [targetHour, targetMin] = JOIN_TIME.split(":").map(Number);
+    const now = new Date();
+    const targetTime = new Date(now);
+    targetTime.setHours(targetHour, targetMin, 0, 0);
+
+    // If the target time has already passed today, schedule for tomorrow
+    if (targetTime <= now) {
+      targetTime.setDate(targetTime.getDate() + 1);
+    }
+
+    const diffMs = targetTime - now;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHrs = Math.floor(diffMins / 60);
+    const remainMins = diffMins % 60;
+
+    console.log(`⏰ Scheduled to join at ${JOIN_TIME}`);
+    console.log(`   Current time: ${now.toLocaleTimeString()}`);
+    console.log(`   Waiting ${diffHrs}h ${remainMins}m until join time...\n`);
+
+    // Wait loop with countdown updates every 60 seconds
+    while (new Date() < targetTime) {
+      const remaining = targetTime - new Date();
+      const remMins = Math.floor(remaining / 60000);
+      const remHrs = Math.floor(remMins / 60);
+      const remM = remMins % 60;
+
+      process.stdout.write(`\r   ⏳ Time remaining: ${remHrs}h ${remM}m   `);
+
+      // Sleep for 30 seconds or until target time, whichever is sooner
+      await new Promise(resolve => setTimeout(resolve, Math.min(30000, remaining)));
+    }
+
+    console.log(`\n\n🚀 It's ${JOIN_TIME}! Joining the meeting now...\n`);
+  }
 
   console.log("Launching Chrome...");
   console.log("Bot profile:", BOT_PROFILE_DIR);
@@ -108,52 +146,77 @@ const path = require("path");
   // --- Enter Name ---
   console.log("Checking if name input is present...");
   try {
-    // Debug: log all visible inputs on the page
-    const inputInfo = await page.evaluate(() => {
-      const inputs = document.querySelectorAll('input');
-      return Array.from(inputs).map(inp => ({
-        type: inp.type,
-        placeholder: inp.placeholder,
-        ariaLabel: inp.getAttribute('aria-label'),
-        visible: inp.offsetParent !== null,
-        value: inp.value,
-        id: inp.id,
-        className: inp.className
-      }));
-    });
-    console.log("  -> All inputs found on page:", JSON.stringify(inputInfo, null, 2));
+    // Google Meet uses position:absolute containers which makes Playwright's
+    // isVisible() return false even though the input IS on screen.
+    // So we use page.evaluate() to directly find and interact with the input.
 
-    // Try multiple strategies to find the name input
-    let nameInput = page.locator('input[placeholder*="name" i]').first();
-    let found = await nameInput.isVisible({ timeout: 3000 }).catch(() => false);
+    const nameEntered = await page.evaluate((name) => {
+      // Strategy 1: Find by exact ID (discovered via debug)
+      let input = document.getElementById('jd.anon_name');
 
-    if (!found) {
-      nameInput = page.locator('input[aria-label*="name" i]').first();
-      found = await nameInput.isVisible({ timeout: 2000 }).catch(() => false);
-    }
+      // Strategy 2: Find by placeholder
+      if (!input) {
+        input = document.querySelector('input[placeholder*="name" i]');
+      }
 
-    if (!found) {
-      // Try any visible text input on the right panel
-      nameInput = page.locator('input[type="text"]:visible').first();
-      found = await nameInput.isVisible({ timeout: 2000 }).catch(() => false);
-    }
+      // Strategy 3: Find by aria-label
+      if (!input) {
+        input = document.querySelector('input[aria-label*="name" i]');
+      }
 
-    if (!found) {
-      // Last resort: any visible input that isn't hidden
-      nameInput = page.locator('input:visible').first();
-      found = await nameInput.isVisible({ timeout: 2000 }).catch(() => false);
-    }
+      // Strategy 4: Any text input on the page
+      if (!input) {
+        input = document.querySelector('input[type="text"]');
+      }
 
-    if (found) {
-      console.log(`  -> Found name input. Typing "${JOIN_NAME}"...`);
-      await nameInput.click(); // Click first to ensure focus
+      if (!input) return { found: false };
+
+      // Focus the input
+      input.focus();
+      input.click();
+
+      // Clear existing value
+      input.value = '';
+
+      // Use React-compatible value setter (Google Meet uses a JS framework)
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype, 'value'
+      ).set;
+      nativeInputValueSetter.call(input, name);
+
+      // Dispatch events to notify the framework of the change
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+
+      return {
+        found: true,
+        id: input.id,
+        placeholder: input.placeholder,
+        newValue: input.value
+      };
+    }, JOIN_NAME);
+
+    if (nameEntered.found) {
+      console.log(`  -> Found name input (id: ${nameEntered.id}, placeholder: "${nameEntered.placeholder}")`);
+      console.log(`  -> Set value to: "${nameEntered.newValue}"`);
+
+      // Also type with keyboard as a backup to ensure React picks it up
       await page.waitForTimeout(500);
-      await nameInput.focus();
-      await page.keyboard.press('Control+A'); // Select all to overwrite existing text
-      await page.keyboard.press('Backspace');
-      await page.keyboard.type(JOIN_NAME, { delay: 150 });
-      console.log("  -> Name entered.");
+      const nameField = page.locator('#jd\\.anon_name, input[placeholder*="name" i]').first();
+      try {
+        await nameField.click({ force: true, timeout: 3000 });
+        await page.keyboard.press('Control+A');
+        await page.keyboard.press('Backspace');
+        await page.keyboard.type(JOIN_NAME, { delay: 120 });
+        console.log("  -> Name typed via keyboard too.");
+      } catch (kbErr) {
+        console.log("  -> Keyboard typing skipped (evaluate method should suffice):", kbErr?.message);
+      }
+
       await page.waitForTimeout(1500);
+      console.log("  -> Name entry complete.");
     } else {
       console.log("  -> Name input not found (already logged in?).");
     }

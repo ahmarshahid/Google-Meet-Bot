@@ -21,7 +21,7 @@ A powerful, automated bot to join Google Meetings with specific names and schedu
 
 ### 2. Clone the Repository
 ```bash
-git clone https://github.com/YOUR_USERNAME/meet-bot.git
+git clone https://github.com/ahmarshahid/Google-Meet-Bot
 cd meet-bot
 ```
 

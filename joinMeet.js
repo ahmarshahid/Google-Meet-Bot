@@ -1,16 +1,22 @@
 const { chromium } = require("playwright");
 const path = require("path");
+const player = require("play-sound")({});
 
 (async () => {
 
   // ===== CONFIGURATION =====
-  const MEET_LINK = "https://meet.google.com/xxx-xxx-xxx";
-  const JOIN_NAME = "xxxxx"; // The name to enter
-  const JOIN_TIME = "xx:xx"; // Time to join in 24-hour format (HH:MM), e.g. "14:30" for 2:30 PM. Set to null to join immediately.
+  const MEET_LINK = "https://meet.google.com/XXX-XXXX-XXX";
+  const JOIN_NAME = "XXXXXXXXXX"; // The name to enter
+  const JOIN_TIME = null; // Time to join in 24-hour format (HH:MM), e.g. "14:30" for 2:30 PM. Set to null to join immediately.
   const AUTO_REJOIN = true; // Automatically rejoin if disconnected
   const REJOIN_CHECK_INTERVAL = 5000; // How often to check if still in meeting (ms)
   const BOT_PROFILE_DIR = path.join(__dirname, "chrome-profile");
   const CHROME_EXE = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+
+  // ===== AUTO-ATTENDANCE CONFIGURATION =====
+  const TRIGGER_WORDS = ["206", "two zero six", "two zero 6", "06", "206.", "06.", "6"];
+  const AUDIO_FILE_PATH = path.join(__dirname, "attendance.mp3");
+  const ENABLE_AUTO_ATTENDANCE = true;
 
   // ===== HELPER: Wait for Scheduled Time =====
   async function waitForScheduledTime() {
@@ -335,6 +341,140 @@ const path = require("path");
     }
   }
 
+  // ===== HELPER: Caption Monitor & Auto-Attendance =====
+  async function monitorCaptions(page) {
+    if (!ENABLE_AUTO_ATTENDANCE) return;
+
+    console.log("\n=== Starting Caption Monitor for Auto-Attendance ===");
+    console.log("   Trigger words:", TRIGGER_WORDS.join(", "));
+
+    // 1. Ensure CC is turned on
+    try {
+      // Look for the "Turn on captions" button
+      const turnOnCcBtn = page.locator('button[aria-label*="Turn on captions" i], button[aria-label*="captions" i]:has-text("Turn on")').first();
+      if (await turnOnCcBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
+        await turnOnCcBtn.click();
+        console.log("  -> Turned on CC (Live Captions).");
+      } else {
+        console.log("  -> Captions are likely already on or button not found.");
+      }
+    } catch (e) {
+      console.log("  -> Could not click CC button:", e?.message);
+    }
+
+    let hasResponded = false;
+
+    // 2. Loop continuously to read the text
+    while (!hasResponded) {
+      try {
+        // Evaluate the DOM to extract text from the caption containers
+        const captionText = await page.evaluate(() => {
+          // Instead of relying on specific obfuscated classes like .iTTPOb or .CNusmb
+          // which change constantly, we get the innerText of the entire bottom
+          // part of the screen or all deeper spans.
+          let text = "";
+          
+          // Google Meet captions are typically rendered inside divs with role="button" 
+          // or deep spans. Let's just collect all text nodes that are reasonably long
+          // and might be sentences/captions.
+          const spans = document.querySelectorAll('span, div[class]');
+          for (let el of spans) {
+              const t = el.textContent || "";
+              // To avoid grabbing the entire UI (like 'Turn on microphone'), we look
+              // for text that is uniquely injected. 
+              // A simpler, bulletproof approach: just get ALL text on the page right now.
+              text += t + " ";
+          }
+          
+          // Alternatively, document.body.innerText gets the visible text of the whole page,
+          // which is exactly what a user sees, including captions.
+          return document.body.innerText || text;
+        });
+
+        if (captionText.trim().length > 0) {
+          // 3. Check for trigger words
+          for (const word of TRIGGER_WORDS) {
+            if (captionText.toLowerCase().includes(word.toLowerCase())) {
+              console.log(`\n🗣️ SUCCESS: Heard trigger word "${word}" in the closed captions!`);
+              hasResponded = true; // Stop listening after we respond once
+              await respondToRollCall(page);
+              break;
+            }
+          }
+        }
+      } catch (err) {
+        // Suppress evaluation errors since DOM might be refreshing quickly
+      }
+
+      try {
+        await page.waitForTimeout(500); // Check every half second
+      } catch (e) {
+        // This handles the "Target page, context or browser has been closed" error
+        // when the bot is trying to rejoin a meeting.
+        console.log("Caption monitor paused (page reloading)...");
+        break; // Break the caption loop so it can be restarted naturally
+      }
+    }
+  }
+
+  // ===== HELPER: Response Action Sequence =====
+  async function respondToRollCall(page) {
+    console.log("-> Executing Auto-Attendance Response!");
+    console.log("-> Unmuting microphone...");
+
+    try {
+      // Find the specific button to turn ON the microphone
+      const turnOnMicBtn = page.locator('button[aria-label*="Turn on microphone" i], button[aria-label*="turn on microphone" i]').first();
+      if (await turnOnMicBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await turnOnMicBtn.click();
+      } else {
+        // Fallback: simply click whatever microphone button is visible
+        const anyMicBtn = page.locator('button[aria-label*="microphone" i], button[aria-label*="Microphone" i]').first();
+        if (await anyMicBtn.isVisible().catch(() => false)) {
+          await anyMicBtn.click();
+        }
+      }
+      console.log("  -> Microphone is ON.");
+    } catch (e) {
+      console.log("  -> Error unmuting:", e?.message);
+    }
+
+    console.log("-> Playing audio file...");
+    try {
+      // Use 'play-sound' library to play present.mp3
+      player.play(AUDIO_FILE_PATH, function(err) {
+        if (err && !err.killed) console.error("  -> Audio playback error:", err);
+      });
+      console.log(`  -> Playing ${AUDIO_FILE_PATH}`);
+    } catch (e) {
+      console.log("  -> Exception starting audio:", e?.message);
+    }
+
+    // Wait for the audio to finish (e.g., 3000ms)
+    console.log("-> Waiting for audio to finish (3 seconds)...");
+    await page.waitForTimeout(3000);
+
+    console.log("-> Muting microphone...");
+    try {
+      // Find the specific button to turn OFF the microphone
+      const turnOffMicBtn = page.locator('button[aria-label*="Turn off microphone" i], button[aria-label*="turn off microphone" i]').first();
+      if (await turnOffMicBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await turnOffMicBtn.click();
+      } else {
+        // Fallback: simply click whatever microphone button is visible
+        const anyMicBtn = page.locator('button[aria-label*="microphone" i], button[aria-label*="Microphone" i]').first();
+        if (await anyMicBtn.isVisible().catch(() => false)) {
+          await anyMicBtn.click();
+        }
+      }
+      console.log("  -> Microphone is OFF.");
+    } catch (e) {
+      console.log("  -> Error muting:", e?.message);
+    }
+
+    console.log("=== Auto-Attendance Complete! ===");
+  }
+
   // ===== MAIN FLOW =====
   await waitForScheduledTime();
 
@@ -354,6 +494,7 @@ const path = require("path");
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-blink-features=AutomationControlled",
+        "--use-fake-ui-for-media-stream",
       ],
       permissions: [],
       ignoreDefaultArgs: ["--enable-automation"],
@@ -367,15 +508,18 @@ const path = require("path");
     return;
   }
 
-  await context.grantPermissions([], { origin: "https://meet.google.com" });
-  console.log("Chrome launched (Mic/Camera permissions denied by default)!\n");
+  await context.grantPermissions(["microphone"], { origin: "https://meet.google.com" });
+  console.log("Chrome launched (Mic permission granted for Virtual Cable)!\n");
 
   const page = await context.newPage();
 
   // Initial join
   await performJoin(page);
 
-  // Monitor and auto-rejoin loop
-  await monitorAndRejoin(page);
+  // Run both monitors concurrently
+  await Promise.all([
+    monitorAndRejoin(page),
+    monitorCaptions(page),
+  ]);
 
 })();

@@ -2,4 +2,12 @@ node_modules
 chrome-profile
 .DS_Store
 *.log
-package-lock.json
+package-lock.json
+.git
+.gitignore
+Present1.mp3
+get_captions.js
+get_dom.js
+meet_dom.html
+present.mp3
+test_captions.js
